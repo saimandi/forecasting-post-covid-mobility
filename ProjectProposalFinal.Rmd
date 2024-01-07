@@ -1,0 +1,1039 @@
+---
+title: "Post COVID-19 Mobility Analysis"
+author: "Sakeena Aimandi"
+output: pdf_document
+date: "2023-12-11"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(forecast)
+library(astsa)
+```
+
+## Introduction
+  Since 2020, the COVID-19 has transformed our lives, leaving a lasting impact on our daily routines and altering social norms. Nations struggled to organize themselves in such an unprecedented time through lockdowns, masking regulations, and vaccination release schedules, while human behavior patterns changed. Weekends typically spent indoors turned into an opportunity to explore parks or go hiking, and weekdays spent in cubicles became virtual meetings attended at a bedside. Three years later, in 2023, these shifts are still felt. Analyzing these changes in mobility can provide valuable insights into society’s response to the problems posed by the pandemics. 
+  
+  This statistical paper aims to examine changes in mobility patterns observed after the pandemic with the goal of providing a basis on which locations society still values post-pandemic, when social norms have been redefined. The results of this study can be used to supplement governmental investment decisions, perhaps choosing to expand facilities that are popular and divest from those that are not. 
+
+## Dataset
+
+  This paper leverages Google’s COVID-19 mobility dataset, an aggregated anonymized dataset that accounts for mobility changes observed post pandemic. The data was collected based on Google Maps users who have their location history setting turned on. The columns included in this dataset are displayed below. There is data available for each country and each sub-region in the country, each of which have a specific place_id. For the purposes of this study, it is most relevant to choose data from the United States as a whole to avoid noise from seasonal patterns of behavior patterns that are attributed to a certain state or country. 
+  
+  The locations for which mobility has been recorded include, retail and recreation, grocery and pharamcy, transit stations, parks, workplaces and residential areas. Google states that these categories are inclusive of more than just what the name suggests. For instance, 'parks' includes national forests, castles, public gardens, and campgrounds, while 'transit stations' include subways, seaports, taxi stands and highway rest stops. 
+  
+```{r}
+# Importing Data and Subsetting for US Only Data
+data_2022_new <- read.csv("/Users/sakeena/Desktop/College/Region_Mobility_Report_CSVs/2022_US_Region_Mobility_Report.csv")
+data_2022_new <- subset(data_2022_new, place_id == "ChIJCzYy5IS16lQRQrfeQ5K5Oxw")
+data_2021_new <- read.csv("/Users/sakeena/Desktop/College/Region_Mobility_Report_CSVs/2021_US_Region_Mobility_Report.csv")
+data_2021_new <- subset(data_2021_new, place_id == "ChIJCzYy5IS16lQRQrfeQ5K5Oxw")
+# https://www.cdc.gov/museum/timeline/covid19.html
+```
+```{r}
+# Columns of Data
+names(data_2022_new)
+```
+  The dependent variable data reflects the percent change in mobility to each location compared to the mobility data collected from a baseline period. The baseline period marks a period from before the pandemic where mobility was “normal”--the period from January 3, 2020 to February 6, 2020. The mobility towards each destination during the baseline period was further aggregated into each day of the week. That is, there is a baseline mobility for Sundays, Mondays, Tuesdays and so on, which is then compared to the actual mobility for each of the following dates to acquire the percent change in mobility from baseline. 
+  
+  The data is daily starting on January 3, 2020 up until October 15, 2022. Based on the timeline of the pandemic in CNN, the first major vaccine for COVID-19 was approved by the FDA on August 23, 2021, marking the day when nations started to administer vaccinations to a large majority of the population. Therefore, we will only consider data from September 01, 2021 to October 15, 2022 in order to capture behavior patterns during the "new normal". 
+  
+```{r}
+# Cropping 2021 Data at Dates Larger than 09-15-2021
+data_2021_new <- data_2021_new[data_2021_new$date >= as.Date("2021-09-01"), ]
+```
+
+```{r}
+# Combining 2021 and 2022 Data
+# Data is now between 09-01-2021 to 10-15-2022
+combined <- rbind(data_2021_new, data_2022_new) 
+save(combined, file = "SakeenaAimandi_FinalProject_Dataset.RData")
+```
+## Exploratory Data Analysis
+  To begin exploratory data analysis, we can first split the data into training and test sets. The training set will include data between 09-01-2021 and 08-09-2022, while the training set will include data between 08-11-2022 and 10-15-2022
+
+```{r}
+# Splitting Data into Test and Train
+# Data between 09-01-2021 and 08-09-2022
+combined_train <- combined[combined$date < as.Date("2022-08-10"), ]
+# Data between 08-10-2021 and 10-15-2022
+combined_test <- combined[combined$date >= as.Date("2022-08-11"), ]
+```
+
+  Below are time series plots of some of the locations. 
+```{r}
+# Plotting Percent Change in Mobility from Baseline to Retail-Recreation
+retail_rec_train <- ts(combined_train$retail_and_recreation_percent_change_from_baseline)
+plot(retail_rec_train, main="Percent Change in Mobility to Retail Rec from Baseline")
+```
+```{r}
+# Plotting Percent Change in Mobility from Baseline to Grocery and Pharmacy
+grocery_pharmacy_train <- ts(combined_train$grocery_and_pharmacy_percent_change_from_baseline)
+plot(grocery_pharmacy_train, main="Percent Change in Mobility to Grocery Pharmacy from Baseline")
+```
+
+```{r}
+# Plotting Percent Change in Mobility from Baseline to Transit Stations
+transit_train <- ts(combined_train$transit_stations_percent_change_from_baseline)
+plot(transit_train, main="Percent Change in Mobility to Transit Stations from Baseline")
+```
+
+```{r}
+# Plotting Percent Change in Mobility from Baseline to Parks
+parks_train <- ts(combined_train$parks_percent_change_from_baseline)
+plot(parks_train, main="Percent Change in Mobility to Parks from Baseline")
+```
+
+
+```{r}
+# Plotting Percent Change in Mobility from Baseline to Workplaces
+workplaces_train <- ts(combined_train$workplaces_percent_change_from_baseline)
+plot(workplaces_train, main="Percent Change in Mobility to Workplaces from Baseline")
+```
+  The plots above demonstrate clear weekly seasonality, or a seasonal period of 7. From the plots, it appears that there was the greatest percent change in mobility among parks, transit stations and workplaces. On the contrary, the change in mobility to grocery and pharmacy locations or retail and recreation locations was not as drastic, since purchasing clothing and food are still important even during a global pandemic. As a result, this paper will focus on examining **lifestyle changes** due to the pandemic to determine how the public chooses to spend their time post-pandemic. The following results will only consider percent change in mobility to parks and workplaces.
+
+
+## Data Manipulation
+
+  To begin our analysis, we can analyze the metrics of both the parks and workplaces datasets.
+
+```{r}
+# Metrics for Percent Change in Mobility from Baseline to Parks
+parks_min <- min(parks_train)
+parks_max <- max(parks_train)
+parks_min_date <- combined_train$date[which(parks_train == parks_min)]
+parks_max_date <- combined_train$date[which(parks_train == parks_max)]
+parks_mean <- mean(parks_train)
+cat("Parks", "\n")
+cat("Minimum Percent Change in Mobility: ", parks_min, "\n")
+cat("Date for Minimum Percent Change in Mobility: ", parks_min_date , "\n")
+cat("Maximum Percent Change in Mobility: ", parks_max, "\n")
+cat("Date for Maximum Percent Change in Mobility: ", parks_max_date, "\n")
+cat("Mean Percent Change in Mobility: ", parks_mean, "\n")
+```
+
+```{r}
+workplaces_min <- min(workplaces_train)
+workplaces_max <- max(workplaces_train)
+workplaces_min_date <- combined_train$date[which(workplaces_train == workplaces_min)]
+workplaces_max_date <- combined_train$date[which(workplaces_train == workplaces_max)]
+workplaces_mean <- mean(workplaces_train)
+
+cat("Workplaces", "\n")
+cat("Minimum Percent Change in Mobility: ", workplaces_min, "\n")
+cat("Date for Minimum Percent Change in Mobility: ", workplaces_min_date, "\n")
+cat("Maximum Percent Change in Mobility: ", workplaces_max, "\n")
+cat("Date for Maximum Percent Change in Mobility: ", workplaces_max_date, "\n")
+cat("Mean Percent Change in Mobility: ", workplaces_mean, "\n")
+```
+  It appears that on average the mobility to parks has increased by about 25% post-pandemic and average mobility to workplaces has decreased about 22% post-pandemic. This suggest that public values time outside in nature and devalues time in the office. 
+  
+  The plots of parks and workplaces themselves also depicts some peaks and drops, so we can investigate where exactly these occur. The highest percent change in mobility to parks occurs on July 4th, 2021, and the lowest occurs on December 25th, 2021 or Christmas day. Likewise, the highest percent change in mobility to workplaces is on December 11th, 2021, and the lowest falls on November 25th, 2021, or Thanksgiving
+day. These metrics imply that we should account for holidays within our time series analysis so that deviations around these times can be predicted. As a result, we will consider a few important federal holidays by creating a binary indicator column each dataset as listed below.
+
+| Holiday           | Date        |
+| ----------------- | ----------- |
+| July 4th          |  07-04-2022 |
+| Christmas Eve     | 12-24-2021  |
+| Christmas         | 12-25-2021  |
+| Labor Day         | 09-05-2022  |
+| Memorial Day      | 05-30-2022  |
+| New Years Eve     | 12-31-2021  |
+| New Years Day     | 01-01-2022  |
+| MLK Jr. Day       | 01-17-2022  |
+| Thanksgiving Day  | 11-25-2021  |
+| Veterans Day      | 11-11-2021  |
+
+```{r}
+suppressWarnings({
+# Percent Change in Mobility to Parks from Baseline
+parks_binary = ts(parks_train)
+parks_binary$july_fourth <- 
+  ifelse(combined_train$date == "2022-07-04", 1, 0)
+parks_binary$memorial_day <- 
+  ifelse(combined_train$date == "2022-05-30", 1, 0)
+parks_binary$labor_day <- 
+  ifelse(combined_train$date == "2021-09-06", 1, 0)
+parks_binary$thanksgiving_day <- 
+  ifelse(combined_train$date == "2021-11-25", 1, 0)
+parks_binary$christmas_day <- 
+  ifelse(combined_train$date == "2021-12-25", 1, 0)
+parks_binary$christmas_eve <- 
+  ifelse(combined_train$date == "2021-12-24", 1, 0)
+parks_binary$new_years_eve <- 
+  ifelse(combined_train$date == "2021-12-31", 1, 0)
+parks_binary$new_years_day <- 
+  ifelse(combined_train$date == "2022-01-01", 1, 0)
+parks_binary$mlk_day <- 
+  ifelse(combined_train$date == "2022-01-17", 1, 0)
+parks_binary$veterans_day <- 
+  ifelse(combined_train$date == "2021-11-21", 1, 0)
+
+parks_binary$holiday <- parks_binary$july_fourth +  
+  parks_binary$memorial_day + 
+  parks_binary$labor_day + 
+  parks_binary$thanksgiving_day + 
+  parks_binary$christmas_day + 
+  parks_binary$christmas_eve + 
+  parks_binary$new_years_day + 
+  parks_binary$mlk_day + 
+  parks_binary$veterans_day
+})
+```
+
+```{r}
+# Percent Change in Mobility to Workplaces from Baseline
+suppressWarnings({
+workplaces_binary = ts(workplaces_train)
+workplaces_binary$july_fourth <- 
+  ifelse(combined_train$date == "2022-07-04", 1, 0)
+workplaces_binary$memorial_day <- 
+  ifelse(combined_train$date == "2022-05-30", 1, 0)
+workplaces_binary$labor_day <- 
+  ifelse(combined_train$date == "2021-09-06", 1, 0)
+workplaces_binary$thanksgiving_day <- 
+  ifelse(combined_train$date == "2021-11-25", 1, 0)
+workplaces_binary$christmas_day <- 
+  ifelse(combined_train$date == "2021-12-25", 1, 0)
+workplaces_binary$christmas_eve <- 
+  ifelse(combined_train$date == "2021-12-24", 1, 0)
+workplaces_binary$new_years_eve <- 
+  ifelse(combined_train$date == "2021-12-31", 1, 0)
+workplaces_binary$new_years_day <- 
+  ifelse(combined_train$date == "2022-01-01", 1, 0)
+workplaces_binary$mlk_day <- 
+  ifelse(combined_train$date == "2022-01-17", 1, 0)
+workplaces_binary$veterans_day <- 
+  ifelse(combined_train$date == "2021-11-21", 1, 0)
+workplaces_binary$holiday <- workplaces_binary$july_fourth +  
+  workplaces_binary$memorial_day + 
+  workplaces_binary$labor_day + 
+  workplaces_binary$thanksgiving_day + 
+  workplaces_binary$christmas_day + 
+  workplaces_binary$christmas_eve + 
+  workplaces_binary$new_years_day + 
+  workplaces_binary$new_years_eve + 
+  workplaces_binary$mlk_day + 
+  workplaces_binary$veterans_day
+})
+```
+
+## Methodology
+
+To conduct our time series analysis, we will follow the below steps;
+
+1. Separate the deterministic and stochastic components of our data through structural decomposition. This involves fitting a linear, quadratic and cubic model to the data and analyzing certain criteria to determine which model would be the best option. Our models clearly have a seasonal component, so we will fit seasonal deterministic models. The binary indicator column will also be used in the linear models.
+
+2. Perform residual analysis to determine if the residuals are normal. This involves investigating the QQ-plot, ACF plots, and performing quantitative Shapiro-Wilk normality test.
+
+3. If the residuals display some pattern, fit an ARIMA or SARIMA model to the data to account for autocorrelation or nonnormality.
+
+4. Combine the stochastic and deterministic components to create a final model and use a two-step process to apply the model to the test set. Analyze errors.
+
+5. Forecast data until December 31, 2023. Assess reasonability.
+
+## Time Series Analysis of Parks
+
+### Fitting the Deterministic Component
+  Below, we are estimating the deterministic component of the model to predict percent change in mobility to parks. 
+
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+# Linear Model
+t=1:length(parks_train)
+per=7 # 7 days in a week
+sets=length(parks_train)/per
+
+# Since 09-01-2021 is a Wednesday, this should correspond to index 4
+repeating_factor <- factor(rep(1:7, length.out = 343)) 
+start_index <- which(repeating_factor == "4")[1]
+levels_reordered <- levels(repeating_factor)[start_index:length(levels(repeating_factor))]
+levels_reordered <- c(levels_reordered, levels(repeating_factor)[1:(start_index-1)])
+day <- factor(repeating_factor, levels = levels_reordered) # Building a factor sequence that starts at index 4
+holiday = parks_binary$holiday
+
+parks.linear = lm(parks_train ~ t + day + holiday - 1)
+summary(parks.linear)
+```
+
+
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+# Linear Model
+ts.plot(parks_train, main="Linear Fit of Percent Change in Mobility to Parks")
+lines(parks.linear$fit,col="blue", lty="dashed")
+```
+
+
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+# Quadratic Structural Decomposition
+t=1:length(parks_train)
+tsq=t^2/factorial(2)
+parks.quadratic = lm(parks_train ~ t + tsq + day + holiday - 1)
+summary(parks.quadratic)
+```
+
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+# Quadratic Model
+ts.plot(parks_train, main="Quadratic Fit of Percent Change in Mobility to Parks")
+lines(parks.quadratic$fit,col="red", lty="dashed")
+```
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+# Cubic Model
+t=1:length(parks_train)
+tsq=t^2/factorial(2)
+tcub=t^3/factorial(3)
+
+parks.cubic = lm(parks_train ~ t + tsq + tcub + day + holiday - 1)
+summary(parks.cubic)
+# Adjusted R-squared is highest
+```
+
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+# Cubic Model
+ts.plot(parks_train, main="Cubic Fit of Percent Change in Mobility to Parks")
+lines(parks.cubic$fit,col="green", lty="dashed")
+```
+  After fitting the three models, we can compare the adjusted $R^2$ value of each model to determine which model best explains the dependent variable. The adjusted $R^2$ value for the cubic model is 0.8751, larger than that of the quadratic or linear model. 
+    The other criteria we will be using is BIC, or Bayesian Information Criteria. The smaller the value of the BIC for a model, the better fit the model is. 
+  $BIC = \log \hat{\sigma}_k^2 + (k \log(n))/n$
+
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+# Evaluating Regression Models through BIC
+nfit = length(parks_train)
+BIC.parks.linear = BIC(parks.linear)/nfit
+BIC.parks.linear
+BIC.parks.quadratic = BIC(parks.quadratic)/nfit
+BIC.parks.quadratic
+BIC.parks.cubic = BIC(parks.cubic)/nfit # smallest
+BIC.parks.cubic
+```
+
+  As seen above, the cubic model has the smallest BIC, so we will continue our analysis with this model.
+
+### Residual Analysis of Deterministic Model for Parks
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+# Cubic Structural Decomposition Residual Analysis
+par(mfrow=c(2,2))
+plot(parks.cubic, main="Cubic Residuals of Percent Change in Mobility to Parks from Baseline",which = 1:4)
+```
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+# Plotting Residuals
+plot(resid(parks.cubic), main="Residuals for Cubic Model")
+```
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+qqnorm(resid(parks.cubic), main="QQNorm of Cubic Model")
+qqline(resid(parks.cubic))
+```
+
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+# Evaluating Normality of Residuals
+shapiro.test(resid(parks.cubic))
+```
+
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+acf(resid(parks.cubic), main="ACF of Residuals of Cubic Model", lag.max = 70) # some seasonality
+```
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+pacf(resid(parks.cubic), main="PACF of Residuals of Cubic Model", lag.max = 70) 
+```
+  The residual plot appears to have a random pattern, suggesting normality. However, the QQ Plot has some deviations on the tail ends. The p-value for the Shapiro-Wilks test is very small, meaning that the null is rejected and the data does in fact deviate from a normal distribution.
+
+  Examining the ACF also suggests that the model has not captured the fully autocorrelation in the parks dataset The ACF plot has many significant lags and displays a seasonal pattern. To fit the residuals, we can automatically fit a multiplicative seasonal ARIMA model to the data, considering all 6 coefficients. 
+  
+  We will use a seasonal period of 7, and maximum AR, MA, SMA, and SAR orders of 2 to avoid overfitting. 
+
+### Residual Fitting for Parks
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+# Automatic Fitting Model to Residuals
+#per=7 # seasonal period
+#d=0 # nonseasonal degree of differencing
+#sd=0# seasonal degree of differencing
+#np=2 # nonseasonal AR order
+#nq=2 # nonseasonal MA order
+#nsp=2 # seasonal AR order
+#nsq=2 # seasonal MA order
+#outsarima.parks <- matrix(nrow=(np+1)*(nq+1)*(nsp+1)*(nsq+1), ncol=5)
+#colnames(outsarima.parks) = c("p", "q", "sp", "sq", "BIC")
+#for (p in 0:np){
+#  for (q in 0:nq) {
+#    for (sp in 0:nsp){
+#      for (sq in 0:nsq){
+#            parksfit<-sarima(resid(parks.cubic),p,d,q,sp,sd,sq,per,no.constant=TRUE, details = FALSE)
+#            row.num<-p*(nq+1)*(nsp+1)*(nsq+1)+q*(nsp+1)*(nsq+1)+sp*(nsq+1)+sq+1
+#            outsarima.parks[row.num,] <- c(p, q, sp, sq, parksfit$BIC)
+#      }
+#    }
+#  }
+#}
+#outsarima.parks
+```
+
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+# Automatic Fitting Model to Residuals
+#indexes_of_min_values <- order(outsarima.parks[,5])[1:5]
+#cat("Row Numbers of Minimum BIC Values: ", indexes_of_min_values)
+```
+
+  From the results, it appears that the smallest BIC occurs for an $ARIMA(1, 0, 0)*(2, 0, 2){7}$ model. However, we must also consider normality and autocorrelation when selecting an appropriate model. Therefore, we will fit SARIMA models for the 5 lowest BIC values and then perform model adequacy checking based on the ACF, QQ-plot and Box L-jung tests.
+
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+parks_residuals_fit1<- sarima(resid(parks.cubic),1,0,0,2,0,2,7,no.constant=TRUE, details=FALSE)
+parks_residuals_fit1
+```
+```{r}
+parks_residuals_fit2<- sarima(resid(parks.cubic),1,0,2,2,0,2,7,no.constant=TRUE, details=FALSE)
+parks_residuals_fit2
+```
+
+```{r}
+parks_residuals_fit3<- sarima(resid(parks.cubic),1,0,1,2,0,2,7,no.constant=TRUE, details=FALSE)
+parks_residuals_fit3
+```
+```{r}
+parks_residuals_fit4<- sarima(resid(parks.cubic),2,0,0,2,0,2,7,no.constant=TRUE, details=FALSE)
+parks_residuals_fit4
+```
+```{r}
+parks_residuals_fit5<- sarima(resid(parks.cubic),0,0,2,2,0,2,7,no.constant=TRUE, details=FALSE)
+parks_residuals_fit5
+```
+Based on the SARIMA fits, it seems that all models do capture the autocorrelation in the residuals since the ACF plots do not display significant lags. However, in examining the Ljung-Box statistic, p values at earlier lags are significant enough to suggest autocorrelation for all other SARIMA models except ARIMA(1, 0, 1)(2, 0, 2){7}. Therefore, we will proceed with this model.
+
+
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+# ARIMA(1, 0, 1)*(2, 0, 2){7}
+hist(parks_residuals_fit3$fit$residuals)
+```
+
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+# ARIMA(1, 0, 1)*(2, 0, 2){7}
+qqnorm(parks_residuals_fit3$fit$residuals,main="Q-Q Plot for Parks Residual Fit",xlab="Residuals")
+qqline(parks_residuals_fit3$fit$residuals)
+```
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+# Shapiro Wilk's Test for ARIMA(1, 0, 1)*(2, 0, 2){7}
+shapiro.test(parks_residuals_fit3$fit$residuals)
+```
+  There does appear to be deviations in normality for the residuals, since the Shapiro-Wilk's test has a low p-value. However, the SARIMA model residuals do capture the autocorrelation in the residuals, so we will proceed with this model.
+
+  The final model to fit the percent change in mobility for parks is a seasonal cubic regression model with an $ARIMA(1, 0, 1)*(2, 0, 2){7}$ model fit for the residuals.
+
+
+### Testing For Parks
+  To test how the model estimates data, we can follow the same process on parks_test data set to predict the percent change in mobility to parks from September 10, 2022 to October 15, 2022. We will begin by first creating the binary indicator then fitting the deterministic components, and then finally fitting the stochastic component.
+
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+# Building Test Set
+suppressWarnings({
+parks_test = combined_test$parks_percent_change_from_baseline
+parks_binary_test = ts(parks_test)
+parks_binary_test$july_fourth <- 
+  ifelse(combined_test$date == "2022-07-04", 1, 0)
+parks_binary_test$memorial_day <- 
+  ifelse(combined_test$date == "2022-05-30", 1, 0)
+parks_binary_test$labor_day <- 
+  ifelse(combined_test$date == "2022-05-05", 1, 0)
+parks_binary_test$thanksgiving_day <- 
+  ifelse(combined_test$date == "2022-11-24", 1, 0)
+parks_binary_test$christmas_day <- 
+  ifelse(combined_test$date == "2022-12-25", 1, 0)
+parks_binary_test$christmas_eve <- 
+  ifelse(combined_test$date == "2022-12-24", 1, 0)
+parks_binary_test$new_years_eve <- 
+  ifelse(combined_test$date == "2022-12-31", 1, 0)
+parks_binary_test$new_years_day <- 
+  ifelse(combined_test$date == "2022-01-01", 1, 0)
+parks_binary_test$mlk_day <- 
+  ifelse(combined_test$date == "2021-01-17", 1, 0)
+parks_binary_test$veterans_day <- 
+  ifelse(combined_test$date == "2022-11-11", 1, 0)
+parks_binary_test$holiday <-  parks_binary_test$july_fourth +  
+  parks_binary_test$memorial_day + 
+  parks_binary_test$labor_day + 
+  parks_binary_test$thanksgiving_day + 
+  parks_binary_test$christmas_day + 
+  parks_binary_test$christmas_eve + 
+  parks_binary_test$new_years_day + 
+  parks_binary_test$mlk_day + 
+  parks_binary_test$veterans_day
+})
+```
+
+
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+# Predicting Cubic Regression Component
+t.test= c(344:409) # From August 10, 2022 to September 15, 2022 
+tsq.test=t.test^2/factorial(2)
+tcub.test = t.test^3/factorial(3)
+sets.test = length(parks_test)/7
+holiday.test = parks_binary_test$holiday
+repeating_factor <- factor(rep(1:7, length.out = 66)) 
+start_index <- which(repeating_factor == "4")[1]
+levels_reordered <- levels(repeating_factor)[start_index:length(levels(repeating_factor))]
+levels_reordered <- c(levels_reordered, levels(repeating_factor)[1:(start_index-1)])
+day.test <- factor(repeating_factor, levels = levels_reordered)
+parks.test.data <- data.frame(t = t.test, tsq = tsq.test, tcub =  tcub.test, day = day.test, holiday = holiday.test)
+predict.parks <- predict(parks.cubic, newdata = parks.test.data, se.fit=TRUE)
+predict.parks
+```
+
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+# Predicting Residual Component
+predict.residuals.parks <- sarima.for(resid(parks.cubic), n.ahead=66,1,0,1,2,0,2,7)
+predict.residuals.parks$pred
+```
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+predict.combined.parks = predict.parks$fit + predict.residuals.parks$pred
+predict.combined.parks 
+```
+
+
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+U.parks.predict.se <- predict.combined.parks + (predict.residuals.parks$se + predict.parks$se)
+L.parks.predict.se<- predict.combined.parks - (predict.residuals.parks$se + predict.parks$se)
+parks_test_time = data.frame(time=c(344:409), value=parks_test)
+plot(parks_test_time, type='l',ylim=c(-20, 80), 
+     main="Predicting Percent Change in Mobility to Parks")
+lines(predict.combined.parks ,col="red") # point forecasts
+lines(U.parks.predict.se,col="blue",lty="dashed") # upper limit
+lines(L.parks.predict.se,col="blue",lty="dashed") # lower limit
+```
+  Based on the graph above, we can see that the prediction(red line) slightly underestimates the actual percent change in mobility to parks. The blue dashed lines represent the error bars based on the additive standard error of both the deterministic and stochastic model. 
+
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+parks.errors=parks_test-(predict.combined.parks) # Forecast errors
+mape.parks=100*(mean(abs((parks.errors)/parks_test)))
+mape.parks
+```
+
+  The MAPE or mean absolute percent error value is 32.65%, which is relatively low, at least for the prediction range we have tested with. This suggest that this model is worth considering to forecast percent change in mobility to parks in the future.
+
+### Forecasting for Parks
+  We will follow the same process to forecast data between October 16, 2022 and December 31, 2023. This involves first building the binary dataset, then forecasting each component and combining the results.
+
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+# Creating Parks Binary Forecast
+date_sequence <- seq(as.Date("2022-10-16"), as.Date("2023-12-31"), by = "day")
+parks_binary_forecast = data.frame(date = date_sequence)
+parks_binary_forecast$july_4th_index_forecast <- 
+  ifelse(parks_binary_forecast$date == "2023-07-04", 1, 0)
+parks_binary_forecast$christmas_eve_index_forecast1 <-
+  ifelse(parks_binary_forecast$date == "2022-12-24", 1, 0 )
+parks_binary_forecast$christmas_eve_index_forecast2 <- 
+  ifelse(parks_binary_forecast$date == "2023-12-24", 1, 0)
+parks_binary_forecast$christmas_day_index_forecast1 <- 
+  ifelse(parks_binary_forecast$date == "2022-12-25", 1, 0)
+parks_binary_forecast$christmas_day_index_forecast2 <- 
+  ifelse(parks_binary_forecast$date == "2023-12-25", 1, 0)
+parks_binary_forecast$labor_day_index_forecast <- 
+  ifelse(parks_binary_forecast$date == "2023-09-04", 1, 0)
+parks_binary_forecast$memorial_day_index_forecast <- 
+  ifelse(parks_binary_forecast$date == "2023-05-29", 1, 0)
+parks_binary_forecast$new_years_day_index_forecast1 <- 
+  ifelse(parks_binary_forecast$date == "2023-01-01", 1, 0)
+parks_binary_forecast$new_years_eve_index_forecast1 <- 
+  ifelse(parks_binary_forecast$date == "2022-12-31", 1, 0)
+parks_binary_forecast$new_years_eve_index_forecast2 <- 
+  ifelse(parks_binary_forecast$date == "2023-12-31", 1, 0)
+parks_binary_forecast$MLK_day_index_forecast <- 
+  ifelse(parks_binary_forecast$date == "2023-01-16", 1, 0)
+parks_binary_forecast$thanksgiving_day_index_forecast1 <- 
+  ifelse(parks_binary_forecast$date == "2022-11-24", 1, 0)
+parks_binary_forecast$thanksgiving_day_index_forecast2 <- 
+  ifelse(parks_binary_forecast$date == "2023-11-23", 1, 0)
+parks_binary_forecast$veterans_day_index_forecast1 <- 
+  ifelse(parks_binary_forecast$date == "2022-11-11", 1, 0)
+parks_binary_forecast$veterans_day_index_forecast2 <- 
+  ifelse(parks_binary_forecast$date == "2023-11-11", 1, 0)
+
+parks_binary_forecast$holiday <- parks_binary_forecast$july_4th_index_forecast + 
+  parks_binary_forecast$christmas_eve_index_forecast1 + 
+  parks_binary_forecast$christmas_eve_index_forecast2 + 
+  parks_binary_forecast$christmas_day_index_forecast1 + 
+  parks_binary_forecast$christmas_day_index_forecast2 + 
+  parks_binary_forecast$labor_day_index_forecast + 
+  parks_binary_forecast$memorial_day_index_forecast + 
+  parks_binary_forecast$new_years_day_index_forecast1 + 
+  parks_binary_forecast$new_years_eve_index_forecast1 + 
+  parks_binary_forecast$new_years_eve_index_forecast2 + 
+  parks_binary_forecast$MLK_day_index_forecast + 
+  parks_binary_forecast$thanksgiving_day_index_forecast1 + 
+  parks_binary_forecast$thanksgiving_day_index_forecast2 + 
+  parks_binary_forecast$veterans_day_index_forecast1 + 
+  parks_binary_forecast$veterans_day_index_forecast2
+```
+
+
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+# Forecasting Cubic Regression Component
+tfore = c(410:851) # 10-16-2022 to 12-31-2023
+tsqfore = tfore^2/factorial(2)
+tcubfore = tfore^3/factorial(3)
+holidayfore = parks_binary_forecast$holiday
+repeating_factor <- factor(rep(1:7, length.out = 442)) 
+start_index <- which(repeating_factor == "7")[1]
+levels_reordered <- levels(repeating_factor)[start_index:length(levels(repeating_factor))]
+levels_reordered <- c(levels_reordered, levels(repeating_factor)[1:(start_index-1)])
+dayfore <- factor(repeating_factor, levels = levels_reordered)
+
+parks.forecast.data <- data.frame(t = tfore, tsq = tsqfore, tcub =  tcubfore, day = dayfore, holiday = holidayfore)
+parks.forecast <- predict(parks.cubic, newdata = parks.forecast.data, se.fit=TRUE)
+```
+
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+# Forecasting Stochastic Component
+parks.residuals.forecast = sarima.for(resid(parks.cubic), n.ahead=442,1,0,1,2,0,2,7)
+```
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+# Forecasting into the Future
+# Combining Deterministic and Stochastic Components
+parks.combined.forecast = parks.forecast$fit + parks.residuals.forecast$pred
+parks.combined.forecast.se = parks.forecast$se.fit +  parks.residuals.forecast$se
+```
+
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+# Forecasting into the Future
+# Combining Deterministic and Stochastic Components
+U.parks.forecast <- parks.combined.forecast + parks.combined.forecast.se
+L.parks.forecast <- parks.combined.forecast - parks.combined.forecast.se
+plot(parks.combined.forecast, ylab="y", type="l", 
+     main="Forecasting for Percent Change in Mobility to Parks")
+lines(U.parks.forecast,col="blue",lty="dashed") # upper limit
+lines(L.parks.forecast,col="blue",lty="dashed") # lower limit
+```
+  The above plot displays the forecast data for percent change in mobility to parks from October 16, 2022 to December 31, 2023. The plot is strictly decreasing until around -2500%, which is quite unreasonable. Rather than forecasting over a year out, we can forecast three months out and determine if the forecast data is as drastic.
+
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+# Forecasting into the Future (A Smaller Range)
+U.parks.forecast <- parks.combined.forecast + parks.combined.forecast.se
+L.parks.forecast <- parks.combined.forecast - parks.combined.forecast.se
+plot(parks.combined.forecast[1:90], ylab="y", type="l", ylim=c(-120, 80), 
+     main="Forecasting for Percent Change in Mobility to Parks(Smaller Range)")
+lines(U.parks.forecast[1:90],col="blue",lty="dashed") # upper limit
+lines(L.parks.forecast[1:90],col="blue",lty="dashed") # lower limit
+```
+  The above plot forecasts the percent change in mobility to parks from October 16, 2022 to January 16, 2023. It appears to display a slightly more reasonable estimate, but a percent change in mobility of -100% still does not seem logical.
+
+### Results from Parks Time Series Analysis
+  The time series analysis of parks provided more insight into how percent mobility to parks has changed over time. We were able to fit a cubic model with a SARIMA model for the residuals, which performed relatively well at forecasting two months ahead of testing range. However, forecasting to predict percent change in mobility to parks farther than that does produce unreasonable results. This may be a result of underfitting of the model. Although the cubic model appeared to best follow the patterns in the test data, it is likely that a higher-order polynomial model would have been a better option to follow the ups-and-downs of changes in mobility to parks.
+  
+## Time Series Analysis of Workplaces
+### Fitting the Deterministic Component
+
+ We will follow a similar process to model the percent change in mobility to workplaces. First, we will estimate the deterministic component of the model.
+
+```{r}
+# Percent Change in Mobility to Workpalces from Baseline
+# Linear Model
+t=1:length(workplaces_train)
+per=7 # 7 days in a week
+sets=length(workplaces_train)/per
+repeating_factor <- factor(rep(1:7, length.out = 343)) 
+start_index <- which(repeating_factor == "4")[1]
+levels_reordered <- levels(repeating_factor)[start_index:length(levels(repeating_factor))]
+levels_reordered <- c(levels_reordered, levels(repeating_factor)[1:(start_index-1)])
+day <- factor(repeating_factor, levels = levels_reordered) # Building a factor sequence that starts at index 4
+holiday <- workplaces_binary$holiday
+workplaces.linear = lm(workplaces_train ~ t + day + holiday - 1)
+summary(workplaces.linear)
+```
+```{r}
+# Percent Change in Mobility to Workplaces from Baseline
+# Linear Model
+ts.plot(workplaces_train, main="Linear Fit of Percent Change in Mobility to Workplaces")
+lines(workplaces.linear$fit,col="blue", lty="dashed")
+```
+
+
+```{r}
+# Percent Change in Mobility to Workplaces from Baseline
+# Quadratic Model
+t=1:length(workplaces_train)
+tsq=t^2/factorial(2)
+
+workplaces.quadratic = lm(workplaces_train ~ t + tsq + day + holiday - 1)
+summary(workplaces.quadratic)
+```
+```{r}
+# Percent Change in Mobility to Workplaces from Baseline
+# Quadratic Model
+ts.plot(workplaces_train, main="Quadratic Fit of Percent Change in Mobility to Workplaces")
+lines(workplaces.quadratic$fit,col="red", lty="dashed")
+```
+```{r}
+# Percent Change in Mobility to Workplaces from Baseline
+# Cubic Model
+t=1:length(workplaces_train)
+tsq=t^2/factorial(2)
+tcub=t^3/factorial(3)
+
+workplaces.cubic = lm(workplaces_train ~ t + tsq + tcub + day + holiday - 1)
+summary(workplaces.cubic)
+```
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+# Cubic Model
+ts.plot(workplaces_train, main="Cubic Fit of Percent Change in Mobility to Workplaces")
+lines(workplaces.cubic$fit,col="green", lty="dashed")
+```
+
+```{r}
+# Percent Change in Mobility to Parks from Baseline
+# Evaluating Regression Models through BIC
+nfit = length(workplaces_train)
+BIC.linear = BIC(workplaces.linear)/nfit
+cat("BIC Linear: ", BIC.linear, "\n")
+BIC.quadratic = BIC(workplaces.quadratic)/nfit 
+cat("BIC Quadratic: ", BIC.quadratic, "\n")
+BIC.cubic = BIC(workplaces.cubic)/nfit# smallest BIC
+cat("BIC Cubic: ", BIC.cubic, "\n")
+```
+
+  In selecting the best model to fit the deterministic component of percent change in mobility to workplaces, we will compare the adjusted $R^2$ value and the BIC criteria. From this, it appears that the cubic model has the larged adjusted $R^2$ and smallest BIC, so we will proceed with this model.
+
+```{r}
+# Percent Change in Mobility to Workplaces from Baseline
+par(mfrow=c(2,2))
+plot(workplaces.cubic,  main="Cubic Residuals of Percent Change in Mobility to Workplaces",which = 1:4)
+```
+```{r}
+# Percent Change in Mobility to Workplaces from Baseline
+# Plotting Residuals
+plot(resid(workplaces.cubic), main="Residuals for Cubic Model")
+```
+```{r}
+# Percent Change in Mobility to Workplaces from Baseline
+# Plotting Residuals
+qqnorm(resid(workplaces.cubic), main="Normal Q-Q Plot of Cubic Model")
+qqline(resid(workplaces.cubic))
+```
+
+```{r}
+# Percent Change in Mobility to Workplaces from Baseline
+shapiro.test(resid(workplaces.cubic))
+```
+  From the residual plots above, it is clear that there are clusters of values that the model does not estimate well. The QQ-plot demonstrates deviations from normality at the tail ends and the Shapiro-Wilk's test suggest that there is nonnormality.
+  
+
+```{r}
+# Percent Change in Mobility to Workplaces from Baseline
+acf(resid(workplaces.cubic), main="ACF of Residuals of Cubic Model", lag.max=70)
+```
+
+```{r}
+# Percent Change in Mobility to Workplaces from Baseline
+pacf(resid(workplaces.cubic), main="PACF of Residuals of Cubic Model", lag.max=70)
+```
+  The ACF and PACF plots above demonstrate that the cubic model has not resolved autocorrelation in the data for percent change in mobility to workplaces. This suggests that an ARIMA model must be used to fit the stochastic component of our model. Similar to the residuals for the deterministic component of the parks model, the ACF and PACF plots do display some slight seasonality, so we will proceed by fitting SARIMA models.
+  
+### Residual Fitting for Workplaces
+```{r}
+# Percent Change in Mobility to Workplaces from Baseline
+# Automatic Fitting Model to Residuals
+suppressWarnings({
+per=7 # seasonal period
+d=0 # nonseasonal degree of differencing
+sd=0 # seasonal degree of differencing
+np=2 # nonseasonal AR order
+nq=2 # nonseasonal MA order
+nsp=2 # seasonal AR order
+nsq=2 # seasonal MA order
+outsarima.workplaces <- matrix(nrow=(np+1)*(nq+1)*(nsp+1)*(nsq+1), ncol=5)
+colnames(outsarima.workplaces) = c("p", "q", "sp", "sq", "BIC")
+for (p in 0:np){
+  for (q in 0:nq) {
+    for (sp in 0:nsp){
+      for (sq in 0:nsq){
+            workplacesfit<-sarima(resid(workplaces.cubic),p,d,q,sp,sd,sq,per,no.constant=TRUE, details = FALSE)
+            row.num<-p*(nq+1)*(nsp+1)*(nsq+1)+q*(nsp+1)*(nsq+1)+sp*(nsq+1)+sq+1
+            outsarima.workplaces[row.num,] <- c(p, q, sp, sq, workplacesfit$BIC)
+      }
+    }
+  }
+}
+outsarima.workplaces
+})
+```
+
+```{r}
+# Percent Change in Mobility to Workplaces from Baseline
+# Automatic Fitting Model to Residuals
+indexes_of_min_values <- order(outsarima.workplaces[,5])[1:5]
+cat("Row Numbers of Minimum BIC Values: ", indexes_of_min_values)
+```
+  The model ARIMA(2, 0, 0)(1, 0, 0){7} has the lowest BIC value, but we will further evaluate the models with the 5 lowest BIC values to select the one that has the least autocorrelation and non normality.
+  
+```{r}
+workplaces_residuals_fit1<- sarima(resid(workplaces.cubic),2,0,0,1,0,0,7,no.constant=TRUE, details=FALSE)
+workplaces_residuals_fit1
+```
+
+```{r}
+workplaces_residuals_fit2<- sarima(resid(workplaces.cubic),2,0,0,0,0,1,7,no.constant=TRUE, details=FALSE)
+workplaces_residuals_fit2
+```
+```{r}
+workplaces_residuals_fit3<- sarima(resid(workplaces.cubic),2,0,0,0,0,0,7,no.constant=TRUE, details=FALSE)
+workplaces_residuals_fit3
+```
+```{r}
+workplaces_residuals_fit4<- sarima(resid(workplaces.cubic),1,0,1,0,0,0,7,no.constant=TRUE, details=FALSE)
+workplaces_residuals_fit4
+```
+
+```{r}
+workplaces_residuals_fit5<- sarima(resid(workplaces.cubic),1,0,1,1,0,0,7,no.constant=TRUE, details=FALSE)
+workplaces_residuals_fit5
+```
+  Based on all of the SARIMA fits, it is not completely clear which model would be most sufficient to fit the residuals. All models considered have at least one significant lag and there does appear to be autocorrelation for some of the earlier lags based on the Ljung-Box plot. As a result, we will select the model with the lowest BIC, ARIMA(2, 0, 0)(1, 0, 0){7}.
+
+```{r}
+# Percent Change in Mobility to workplaces from Baseline
+hist(workplaces_residuals_fit1$fit$residuals, main="Histogram for Workplaces Residuals Fit")
+```
+
+```{r}
+# Percent Change in Mobility to Workplaces from Baseline
+qqnorm(workplaces_residuals_fit1$fit$residuals,main="Normal Q-Q Plot for Workplaces Residuals Fit",xlab="resid")
+qqline(workplaces_residuals_fit1$fit$residuals)
+```
+
+```{r}
+# Percent Change in Mobility to Workplaces from Baseline
+shapiro.test(workplaces_residuals_fit1$fit$residuals)
+```
+  There does appear to be deviations in normality for the residuals, since the Shapiro-Wilk's test has a low p-value. However, the SARIMA model residuals do capture the autocorrelation in the residuals, so we will proceed with this model.
+
+  The final model to fit the percent change in mobility to workplaces is a seasonal cubic regression model with an $ARIMA(2, 0, 0)*(1, 0, 0){7}$ model fit for the residuals.
+
+### Testing for Workplaces
+
+```{r}
+# Percent Change in Mobility to Workplaces from Baseline
+# Building Test Set
+workplaces_test = combined_test$workplaces_percent_change_from_baseline
+workplaces_binary_test = ts(parks_test)
+workplaces_binary_test$july_fourth <- 
+  ifelse(combined_test$date == "2022-07-04", 1, 0)
+workplaces_binary_test$memorial_day <- 
+  ifelse(combined_test$date == "2022-05-30", 1, 0)
+workplaces_binary_test$labor_day <- 
+  ifelse(combined_test$date == "2022-09-05", 1, 0)
+workplaces_binary_test$thanksgiving_day <- 
+  ifelse(combined_test$date == "2022-11-24", 1, 0)
+workplaces_binary_test$christmas_day <- 
+  ifelse(combined_test$date == "2022-12-25", 1, 0)
+workplaces_binary_test$christmas_eve <- 
+  ifelse(combined_test$date == "2022-12-24", 1, 0)
+workplaces_binary_test$new_years_eve <- 
+  ifelse(combined_test$date == "2022-12-31", 1, 0)
+workplaces_binary_test$new_years_day <- 
+  ifelse(combined_test$date == "2022-01-01", 1, 0)
+workplaces_binary_test$mlk_day <- 
+  ifelse(combined_test$date == "2021-01-17", 1, 0)
+workplaces_binary_test$veterans_day <- 
+  ifelse(combined_test$date == "2022-11-11", 1, 0)
+
+workplaces_binary_test$holiday <-  
+  workplaces_binary_test$july_fourth +  
+  workplaces_binary_test$memorial_day + workplaces_binary_test$labor_day + 
+  workplaces_binary_test$thanksgiving_day + workplaces_binary_test$christmas_day +
+  workplaces_binary_test$christmas_eve + 
+  workplaces_binary_test$new_years_day + 
+  workplaces_binary_test$mlk_day + 
+  workplaces_binary_test$veterans_day
+```
+
+  Just as for the parks data set, we will first fit the deterministic component of the model to the testing data to predict the percent change in mobility to workplaces from August 10, 2022 to September 15, 2022.
+  
+```{r}
+# Percent Change in Mobility to Workplaces from Baseline
+# Predicting Cubic Regression Component
+t.test= c(344:409) # From August 10, 2022 to September 15, 2022 
+tsq.test=t.test^2/factorial(2)
+tcub.test = t.test^3/factorial(3)
+sets.test = length(parks_test)/7
+holiday.test = workplaces_binary_test$holiday
+repeating_factor <- factor(rep(1:7, length.out = 66)) 
+start_index <- which(repeating_factor == "4")[1]
+levels_reordered <- levels(repeating_factor)[start_index:length(levels(repeating_factor))]
+levels_reordered <- c(levels_reordered, levels(repeating_factor)[1:(start_index-1)])
+day.test <- factor(repeating_factor, levels = levels_reordered)
+workplaces.test.data <- data.frame(t = t.test, tsq = tsq.test, tcub =  tcub.test, day = day.test, holiday = holiday.test)
+predict.workplaces <- predict(workplaces.cubic, newdata = workplaces.test.data, se.fit=TRUE)
+predict.workplaces
+```
+
+  Now, we will predict the stochastic component from the SARIMA model fit before.
+```{r}
+# Percent Change in Mobility to Workplaces from Baseline
+# Predicting Stochastic Component
+predict.residuals.workplaces <- sarima.for(resid(workplaces.cubic), n.ahead=66,2,0,0,1,0,0,7)
+predict.residuals.workplaces$pred
+```
+```{r}
+# Percent Change in Mobility to Workplaces from Baseline
+# Combining Deterministic and Stochastic Components
+predict.combined.workplaces = predict.workplaces$fit + predict.residuals.workplaces$pred
+predict.combined.workplaces
+```
+
+
+```{r}
+# Percent Change in Mobility to Workplaces from Baseline
+U.workplaces.predict.se <- predict.combined.workplaces + (predict.residuals.workplaces$se + predict.workplaces$se)
+L.workplaces.predict.se<- predict.combined.workplaces - (predict.residuals.workplaces$se + predict.workplaces$se)
+workplaces_test_time = data.frame(time=c(344:409), value=workplaces_test)
+plot(workplaces_test_time, type='l',ylim=c(-80, 20), main="Predicting Percent Change in Mobility to Workplaces")
+lines(predict.combined.workplaces ,col="red") # point forecasts
+lines(U.workplaces.predict.se,col="blue",lty="dashed") # upper limit
+lines(L.workplaces.predict.se,col="blue",lty="dashed") # lower limit
+```
+  The red lines on the plot above mark the predicted values for percent change in mobility to workplaces from August 10, 2022 to September 15, 2022, while the blue dashed lines are the error bars. From the plot above, it is clear that the model for workplaces underestimates the actual percent change in mobility to workplaces. There also appears to be a sharp drop at around 368, which is likely Labor Day. The model does accurately register this drop, suggesting that the binary indicator holiday column is important.
+  
+```{r}
+# Percent Change in Mobility to Workplaces from Baseline
+workplaces.errors=workplaces_test - predict.combined.workplaces # Forecast errors
+mape.workplaces=100*(mean(abs((workplaces.errors)/workplaces_test)))
+cat("MAPE for Workplaces: ", mape.workplaces)
+```
+
+  The MAPE value for the prediction of percent change in mobility to workplaces is quite high, at around 100%, suggesting that the model is not adequate at prediction. 
+
+### Forecasting for Workplaces
+  We will follow the same process to forecast data between October 16, 2022 and December 31, 2023. This involves first building the binary dataset.
+
+```{r}
+# Percent Change in Mobility to Workplaces from Baseline
+# Creating Workplaces Binary Forecast
+date_sequence <- seq(as.Date("2022-10-16"), as.Date("2023-12-31"), by = "day")
+workplaces_binary_forecast = data.frame(date = date_sequence)
+workplaces_binary_forecast$july_4th_index_forecast <- 
+  ifelse(workplaces_binary_forecast$date == "2023-07-04", 1, 0)
+workplaces_binary_forecast$christmas_eve_index_forecast1 <- 
+  ifelse(workplaces_binary_forecast$date == "2022-12-24", 1, 0 )
+workplaces_binary_forecast$christmas_eve_index_forecast2 <- 
+  ifelse(workplaces_binary_forecast$date == "2023-12-24", 1, 0)
+workplaces_binary_forecast$christmas_day_index_forecast1 <- 
+  ifelse(workplaces_binary_forecast$date == "2022-12-25", 1, 0)
+workplaces_binary_forecast$christmas_day_index_forecast2 <- 
+  ifelse(workplaces_binary_forecast$date == "2023-12-25", 1, 0)
+workplaces_binary_forecast$labor_day_index_forecast <- 
+  ifelse(workplaces_binary_forecast$date == "2023-09-04", 1, 0)
+workplaces_binary_forecast$memorial_day_index_forecast <- 
+  ifelse(workplaces_binary_forecast$date == "2023-05-29", 1, 0)
+workplaces_binary_forecast$new_years_day_index_forecast1 <- 
+  ifelse(workplaces_binary_forecast$date == "2023-01-01", 1, 0)
+workplaces_binary_forecast$new_years_eve_index_forecast1 <- 
+  ifelse(workplaces_binary_forecast$date == "2022-12-31", 1, 0)
+workplaces_binary_forecast$new_years_eve_index_forecast2 <- 
+  ifelse(workplaces_binary_forecast$date == "2023-12-31", 1, 0)
+workplaces_binary_forecast$MLK_day_index_forecast <- 
+  ifelse(workplaces_binary_forecast$date == "2023-01-16", 1, 0)
+workplaces_binary_forecast$thanksgiving_day_index_forecast1 <- 
+  ifelse(workplaces_binary_forecast$date == "2022-11-24", 1, 0)
+workplaces_binary_forecast$thanksgiving_day_index_forecast2 <- 
+  ifelse(workplaces_binary_forecast$date == "2023-11-23", 1, 0)
+workplaces_binary_forecast$veterans_day_index_forecast1 <- 
+  ifelse(workplaces_binary_forecast$date == "2022-11-11", 1, 0)
+workplaces_binary_forecast$veterans_day_index_forecast2 <- 
+  ifelse(workplaces_binary_forecast$date == "2023-11-11", 1, 0)
+
+workplaces_binary_forecast$holiday <- workplaces_binary_forecast$july_4th_index_forecast + workplaces_binary_forecast$christmas_eve_index_forecast1 + 
+  workplaces_binary_forecast$christmas_eve_index_forecast2 + 
+  workplaces_binary_forecast$christmas_day_index_forecast1 + 
+  workplaces_binary_forecast$christmas_day_index_forecast2 + 
+  workplaces_binary_forecast$labor_day_index_forecast + 
+  workplaces_binary_forecast$memorial_day_index_forecast + 
+  workplaces_binary_forecast$new_years_day_index_forecast1 +
+  workplaces_binary_forecast$new_years_eve_index_forecast1 + 
+  workplaces_binary_forecast$new_years_eve_index_forecast2 +
+  workplaces_binary_forecast$MLK_day_index_forecast + 
+  workplaces_binary_forecast$thanksgiving_day_index_forecast1 + 
+  workplaces_binary_forecast$thanksgiving_day_index_forecast2 + 
+  workplaces_binary_forecast$veterans_day_index_forecast1 + 
+  workplaces_binary_forecast$veterans_day_index_forecast2
+```
+
+  Now, we can fit the deterministic and stochastic components, as well as use their errors to generate error bars for the time series plot.
+```{r}
+# Percent Change in Mobility to Workplaces from Baseline
+# Forecasting Cubic Regression Component
+tfore = c(410:851) # 10-16-2022 to 12-31-2023
+tsqfore = tfore^2/factorial(2)
+tcubfore = tfore^3/factorial(3)
+holidayfore = workplaces_binary_forecast$holiday
+repeating_factor <- factor(rep(1:7, length.out = 442)) 
+start_index <- which(repeating_factor == "7")[1]
+levels_reordered <- levels(repeating_factor)[start_index:length(levels(repeating_factor))]
+levels_reordered <- c(levels_reordered, levels(repeating_factor)[1:(start_index-1)])
+dayfore <- factor(repeating_factor, levels = levels_reordered)
+
+workplaces.forecast.data <- data.frame(t = tfore, tsq = tsqfore, tcub =  tcubfore, day = dayfore, holiday = holidayfore)
+workplaces.forecast <- predict(workplaces.cubic, newdata = workplaces.forecast.data, se.fit=TRUE)
+```
+
+```{r}
+# Percent Change in Mobility to Workplaces from Baseline
+# Forecasting Stochastic Component
+workplaces.residuals.forecast = sarima.for(resid(workplaces.cubic), n.ahead=442,2,0,0,1,0,0,7)
+```
+```{r}
+# Percent Change in Mobility to Workplaces from Baseline
+# Forecasting into the Future
+# Combining Deterministic and Stochastic Components
+workplaces.combined.forecast = workplaces.forecast$fit + workplaces.residuals.forecast$pred
+workplaces.combined.forecast.se = workplaces.forecast$se.fit + workplaces.residuals.forecast$se
+```
+
+```{r}
+# Percent Change in Mobility to Workplaces from Baseline
+# Forecasting into the Future
+# Combining Deterministic and Stochastic Components
+U.workplaces.forecast <- workplaces.combined.forecast + workplaces.combined.forecast.se
+L.workplaces.forecast <- workplaces.combined.forecast - workplaces.combined.forecast.se
+plot(workplaces.combined.forecast, type="l", main="Forecasting for Percent Change in Mobility to Workplaces")
+lines(U.workplaces.forecast,col="blue",lty="dashed") # upper limit
+lines(L.workplaces.forecast,col="blue",lty="dashed") # lower limit
+```
+  The above plot displays the forecast data for percent change in mobility to workplaces from October 16, 2022 to December 31, 2023. The plot is strictly decreasing until around -500%, which is quite unreasonable. This suggests that the model is not accurate at predicting percent change in mobility to workplaces for out of sample dates. 
+
+### Results from Workplaces Time Series Analysis
+  The time series analysis of workplaces provided more insight into how percent change mobility to workplaces has changed post-pandemic. The cubic model with a SARIMA fit for the residuals was accurate at predicting percent change in mobility to workplaces two months outside of testing range. However, just as with the parks model, percent change in mobility to parks exceeding two months outside testing range produced unreasonable results. A better approach may have been fitting a higher-order polynomial model or taking more approaches to normalize residuals from the SARIMA fit.
+
+## Conclusion
+  As expected, the COVID-19 pandemic has shifted the public's interest away from workplaces and towards nature, as can be seen by the simple exploratory data analysis. Both the additive cubic and SARIMA models for each dataset were accurate predictors of percent change in mobility to their respective areas within two months of testing range. Forecasting farther than that proved to provide extremely large and unreasonable results.
+  These models could be further fine-tuned by fitting a higher-order polynomial to each data set, as well as using other models to fit the residuals. The SARIMA model for both residuals was not normal, however other metrics suggested that the model did indeed capture autocorrelations present in the data. Additional model fitting is necessary to eliminate non normality.
+  Future time series analysis for post COVID-19 mobility likely requires a larger data set. There was only a year's worth of daily data to model percent change in mobility to locations, which is why lower-order polynomial models may have seemed to accurately follow the data. If such an analysis were to be performed in 5 years time, the data would perhaps show a different pattern. This analysis of the shift in public interest would guide many government investment decisions, so it is worth revisiting in the future.
+
+  
